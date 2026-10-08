@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "morec"
+version = "1.0.0"
+description = "Reduced-order models of impurity Green's functions from eigenvector continuation and model order reduction (MOR+EC)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Norman Hogan", email = "anhogan3@ncsu.edu" }]
+dependencies = ["numpy>=2.0", "scipy>=1.11", "psutil"]
+
+[project.optional-dependencies]
+paper = ["matplotlib>=3.10,<3.11"]
+examples = ["matplotlib>=3.10,<3.11", "jupyterlab"]
+test = ["pytest"]
+
+[project.scripts]
+morec = "morec.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
