@@ -31,7 +31,8 @@ def test_enrichment_grows_saves_and_reloads(atlas_dir, tmp_path, resolvent):
     assert rel(G_mem, G_ed) < err_before
     G_disk = MORSolver(work).solve(7.5, 0.0, BATH, IW)[0]
     assert rel(G_disk, G_mem) < 1e-12
-    assert len(json.load(open(os.path.join(patch.path, "meta.json")))["enrichment_history"]) == 1
+    hist = json.load(open(os.path.join(patch.path, "meta.json")))["enrichment_history"]
+    assert len(hist) == 1 and hist[0]["event_time_s"] >= hist[0]["total_time_s"]
 
 
 def test_dmft_point_runs_with_both_solvers(atlas_dir, tmp_path):

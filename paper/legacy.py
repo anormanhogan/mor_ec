@@ -18,7 +18,8 @@ def rom_summary(atlas_dir):
     """Build/enrichment cost and ROM size of an atlas in either layout.
 
     Returns dict(ec_s, mor_s, enrich_ec_s, enrich_mor_s, n_events, k_off, k, m, ec_tol), where
-    ec_s/mor_s are the offline basis-selection/projection times and m is the mean m_p/m_h.
+    ec_s/mor_s are the offline basis-selection/projection times and m is the mean m_p/m_h; also
+    event_wall_s, the wall time of the enrichment events, when the atlas recorded it.
     """
     out = dict(ec_s=0.0, mor_s=0.0, enrich_ec_s=0.0, enrich_mor_s=0.0, n_events=0)
     legacy = is_legacy(atlas_dir)
@@ -44,6 +45,9 @@ def rom_summary(atlas_dir):
             out["enrich_ec_s"] += e.get("ec_time_s", 0.0)
             out["enrich_mor_s"] += e.get("mor_time_s", 0.0)
             out["n_events"] += 1
+        events = pm.get("enrichment_history", [])
+        if events and all("event_time_s" in e for e in events):  # whole events, candidate search included
+            out["event_wall_s"] = out.get("event_wall_s", 0.0) + sum(e["event_time_s"] for e in events)
     out["m"] = float(np.mean(ms)) if ms else None
     return out
 

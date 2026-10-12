@@ -67,6 +67,9 @@ def main(argv=None):
     d.add_argument("--interp", choices=["gf", "sigma"], default="gf")
     d.add_argument("--off_diagonal", action="store_true", help="also evaluate G_ij, i != j (untested)")
     d.add_argument("--enrich", action="store_true", help="enrich the atlas online (modifies it in place)")
+    d.add_argument("--compress", metavar="SWEEP_DIR",
+                   help="compress the ROM on the baths of this finished sweep (MOR solver without --enrich)")
+    d.add_argument("--compress_tol", type=float, default=1e-5)
     d.add_argument("--n_workers", type=int, default=1)
     _add_fields(d, DMFTConfig)
     _add_fields(d, EnrichConfig, prefix="enrich_")
@@ -83,6 +86,10 @@ def main(argv=None):
                   gf_tol=cfg.gf_tol, n_workers=args.n_workers, bw_ratios=cfg.bw_ratios,
                   enrich=_config(EnrichConfig, args, "enrich_") if args.enrich else None)
     solver = make_solver(args.solver, cfg.N, cfg.NI, atlas_dir=args.atlas, **kw)
+    if args.compress:
+        if args.solver != "MOR" or args.enrich:
+            raise SystemExit("--compress needs the MOR solver without --enrich")
+        solver.compress(args.compress, args.compress_tol)
     if args.JU is not None:
         levels = [(f"JU{r:.4g}", lambda U, r=r: r * U) for r in _axis(args.JU)]
     else:

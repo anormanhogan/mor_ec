@@ -15,6 +15,14 @@ pip install -e ".[paper]"     # + matplotlib, to regenerate the figures
 pip install -e ".[test]"      # + pytest
 ```
 
+New users: `examples/getting_started.ipynb` walks through the model, an offline build, ROM vs ED
+Green's functions, enrichment and DMFT sweeps in two to three minutes on a laptop
+(`pip install -e ".[examples]"`, then `jupyter lab examples/`).  It also shows where the cost of
+each solver goes, and ends with a fine two-band scan (about 1,900 impurity solves) run with both
+solvers, where the ROM is paid for once and breaks even partway through, and with the
+compression of the ROM.  At the small sizes used there the ROM is only a few times cheaper per
+solve than ED; the gain grows with the size of the impurity model.
+
 ## Quick start
 
 ```python
@@ -28,8 +36,9 @@ cfg = DMFTConfig(N=8, NI=2, bw_ratios=[1.0, 0.1])
 solver = MORSolver("atlas", bw_ratios=cfg.bw_ratios, enrich=EnrichConfig(variance_tol=1e-4))
 sweep(cfg, solver, "runs/coarse", sweep_values(0, 10, 1, clamp_min=0.01), bwr_vals=sweep_values(0.1, 0.5, 0.1))
 
-# Fine scan entirely inside the ROM.
+# Fine scan entirely inside the ROM, compressed first on the baths the coarse sweep visited (optional).
 solver = MORSolver("atlas", bw_ratios=cfg.bw_ratios)
+solver.compress("runs/coarse", tol=1e-5)
 sweep(cfg, solver, "runs/fine", sweep_values(0, 8, 0.1, clamp_min=0.01), bwr_vals=sweep_values(0.1, 0.5, 0.01))
 ```
 
@@ -38,7 +47,7 @@ The same from the command line:
 ```bash
 morec build atlas --N 8 --NI 2 --r 3 --ec_tol 1e-2 --bw_lo 1 0.01 --bw_hi 1 0.75
 morec dmft runs/coarse --N 8 --NI 2 --bw_ratios 1 0.1 --atlas atlas --U 0 10 1 --bwr 0.1 0.5 0.1 --enrich
-morec dmft runs/fine --N 8 --NI 2 --bw_ratios 1 0.1 --atlas atlas --U 0 8 0.1 --bwr 0.1 0.5 0.01
+morec dmft runs/fine --N 8 --NI 2 --bw_ratios 1 0.1 --atlas atlas --U 0 8 0.1 --bwr 0.1 0.5 0.01 --compress runs/coarse
 morec dmft runs/ed --N 8 --NI 2 --bw_ratios 1 0.1 --solver ED --U 0 10 1 --bwr 0.1 0.5 0.1
 ```
 
@@ -57,6 +66,7 @@ to `<outdir>/[bwr*/]J*/U*/[mu*/]` (`dmft_log.txt`, `dmft_metadata.json`, `gf_sig
 | Projected H_hat, I_hat, a, b (Eq. 7) | `mor.coupling_vecs`, `ec.projected_terms` |
 | ROM GF by Lanczos on the whitened H_hat | `mor.gf_galerkin`, `atlas.Patch.gf` |
 | Online enrichment (Ritz trigger, local greedy, App. A) | `dmft.MORSolver.try_enrich`, `atlas.Patch.enrich` (`EnrichConfig`) |
+| Compression of the ROM on the coarse sweep (App. E) | `dmft.MORSolver.compress`, `atlas.Patch.compress`, `mor.compress_orth` |
 | DMFT self-consistency (App. B) | `dmft.run_point`, `bethe` |
 | ED reference solver | `ed.EDSolver` (Green's function by `lanczos.haydock_gf`, the recursion the ROM uses) |
 | IRKA frequencies (SIAM demo, Fig. 5) | `irka.select_frequencies` |
@@ -75,24 +85,41 @@ cd paper
 python make_figures.py          # Figs. 4-11 and Table I from paper/data (2 MB) -> paper/figures/
 ```
 
-`paper/data` was reduced from the production runs by `extract_data.py --layout production`.  To
-regenerate everything from scratch, run the campaigns and extract again:
+`paper/data` was reduced from the campaign runs by `extract_data.py`.  To regenerate everything
+from scratch, run the campaigns and extract again:
 
 ```bash
 export MOREC_RUNS=/scratch/runs
-python campaigns/run_campaign.py n8ni2 build     # Figs. 6, 9, 10, 11, Table I
-python campaigns/run_campaign.py n8ni2 enrich
-python campaigns/run_campaign.py n8ni2 post
+python campaigns/run_campaign.py n8ni2 build       # Figs. 6, 9, 10, 11, Table I
+python campaigns/run_campaign.py n8ni2 enrich      # coarse sweep with online enrichment
+python campaigns/run_campaign.py n8ni2 post        # fine sweeps, ROM as built
+python campaigns/run_campaign.py n8ni2 compress    # fine sweeps, compressed ROM
 python campaigns/run_campaign.py n8ni2 ed
-python campaigns/run_campaign.py n10ni1 ...      # Figs. 7, 8 (same steps)
-python campaigns/run_campaign.py siam_demo build # Fig. 5
-python paper/extract_data.py --raw $MOREC_RUNS --layout campaign fig5 fig6_compute fig6 fig7_8 fig9 fig10 fig11
+python campaigns/run_campaign.py n10ni1 ...        # Figs. 7, 8 (same steps)
+python campaigns/run_campaign.py siam_demo build   # Fig. 5
+
+python campaigns/time_solvers.py n8ni2 --compressed       # Table I, Fig. 6(a) labels
+python campaigns/time_solvers.py n10ni1 --compressed      # Fig. 8 inset
+python campaigns/tolerance_scan.py n8ni2 --configs r3_thr1e-4 r6_thr1e-4 \
+    --tols 1e-3 1e-4 3e-5 1e-5 3e-6 1e-6 1e-7 1e-8        # Fig. 6(c) errors
+python campaigns/time_solvers.py n8ni2 --configs r3_thr1e-4 r6_thr1e-4 \
+    --compressed 1e-3 1e-4 3e-5 1e-5 3e-6 1e-6 1e-7 1e-8 \
+    --out $MOREC_RUNS/n8ni2/timing_tolerance_scan.json     # Fig. 6(c) labels
+
+python paper/extract_data.py --raw $MOREC_RUNS --layout campaign --compressed c \
+    fig5 fig6_compute fig6 fig7_8 fig9 fig10 fig11
 ```
 
-Figs. 1-3 are drawings and are not generated.  `finite_j` (campaign and figures) covers the
-finite-Hund's-coupling runs that are not part of the paper.  Exact figure reproduction needs
-matplotlib 3.10 (pinned in the `paper` extra; later versions choose different log-axis ticks) and
-`latex` on the PATH (otherwise the text falls back to matplotlib's fonts). 
+`time_solvers.py` gives identical inputs to ED and to every ROM in turn within one process, so
+that all of them see the same machine load; speedups taken from sweeps that ran as separate jobs
+differ by 10-20% from one job to the next.  Table I, the labels of Fig. 6 and the inset of Fig.
+8 come from it; Figs. 7, 9(b) and 10(b) show the times logged by the sweeps themselves.  The
+fine scans of Figs. 7, 8 and 10 use the compressed ROM, the real-frequency spectra of Fig. 11
+the ROM as built.
+
+Figs. 1-3 are drawings and are not generated.  Exact figure reproduction needs matplotlib 3.10
+(pinned in the `paper` extra; later versions choose different log-axis ticks) and `latex` on the
+PATH (otherwise the text falls back to matplotlib's fonts).
 
 ## Notes and limitations
 
@@ -105,8 +132,15 @@ matplotlib 3.10 (pinned in the `paper` extra; later versions choose different lo
   the doped bath fit returns its poles in that order.  Results for models with one free pole per
   side (the paper's N=8, NI=2 runs) are unaffected.  Atlases built before this was added remain
   usable but were trained and enriched on unordered baths.
-- `Patch.compress` (a second projection of the ROM onto the directions used at a given set of
-  parameter points) is experimental and is not used in the paper.
+- Compression: `MORSolver.compress(sweep_dir, tol)` projects the ROM onto the directions its own
+  solutions use at the baths a finished sweep visited and the lowest Matsubara frequencies (a
+  proper orthogonal decomposition), which shrinks the ROM and the cost of every Green's function.
+  It is held in memory, leaves the ground state unchanged and applies on the imaginary axis only:
+  other frequencies go through the full ROM, and an enrichment event restores the full ROM.  The
+  compressed ROM is accurate only in the region the training sweep covered.  By default every
+  bath of every DMFT iteration is used; `final_only=True` uses the last bath of each loop, which
+  is much cheaper but needs a sweep whose grid is dense in the region to be scanned.  The paper
+  uses `final_only=True` and `tol=1e-5` for both models (`campaigns/run_campaign.py`).
 - Multi-patch atlases (`n_patches_*`, `k_local`, `halo`) and off-diagonal G_ij are carried over
   from development and have not been validated; using them emits a warning.  For the models
   here (no inter-orbital hopping) G_ij vanishes for i != j, so off-diagonal pairs are dropped.

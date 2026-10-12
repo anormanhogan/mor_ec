@@ -4,7 +4,11 @@
 
 --layout production reads the directory names of the original production archive;
 --layout campaign reads the output of campaigns/run_campaign.py (ROOT = --raw).
-Writes paper/data/*.json|npz.  Fig. 6 panels come from the error-channel CSVs when present in
+--compressed TAG (campaign layout) takes the fine sweeps run with the compressed ROM (<sweep>_TAG_run of
+`run_campaign.py CAMPAIGN compress`, TAG = c) and the timings measured with it (campaigns/time_solvers.py).
+--logs DIR: captured output of the enrich steps, for atlases that did not record the wall time of their
+enrichment events themselves (those enriched with morec 1.0).
+Writes paper/data/*.json|npz (or $MOREC_PAPER_DATA).  Fig. 6 panels come from the error-channel CSVs when present in
 the raw directory (computing them takes ~15 min, see fig6_compute).
 """
 import argparse
@@ -23,7 +27,7 @@ from morec.ed import exact_gf
 from morec.atlas import Atlas
 import legacy
 
-DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+DATA = os.environ.get("MOREC_PAPER_DATA", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 GS_GF = re.compile(r"GS:\s*([\d.]+)s\s*GF:\s*([\d.]+)s")
 OCC = re.compile(r"Occupation:\s*n_0=[\d.eE+\-]+\s+sum=([\d.eE+\-]+)")
 N8_CFGS = [f"r{r}_thr1e-4" for r in range(1, 7)] + ["r4_thr1e-8"]
@@ -43,8 +47,6 @@ LAYOUTS = {
         "n10_ed": "final_production_data/N10_NI1_ED_DMFT",
         "n10_post": "final_production_data/N10NI1_MOREC_r3_thr1e-1_post_enrich_run_r3_only",
         "n10_atlas": "final_production_data/N10NI1_atlas_r3_noirka_greedy_r3_only_thr0.1",
-        "fj_ed": "N8_NI2_ED_DMFT_finite_J",
-        "fj_post": "N8NI2_MOREC_r3_thr1e-3_post_enrich_run_finite_J",
     },
     "campaign": {
         "demo": "siam_demo/atlas_r6_tol1e-06",
@@ -54,13 +56,12 @@ LAYOUTS = {
         "n8_enrich": lambda c: f"n8ni2/{c}/enrich_run",
         "n8_post": lambda c: f"n8ni2/{c}/post_run",
         "n8_fine": "n8ni2/r3_thr1e-4/fine_run",
+        "n8_timing": "n8ni2/timing_back_to_back.json",
         "fig6_csv_r": None,
         "fig6_csv_k": None,
         "n10_ed": "n10ni1/ed",
         "n10_post": "n10ni1/r3_thr1e-1/post_run",
         "n10_atlas": "n10ni1/r3_thr1e-1/atlas",
-        "fj_ed": "finite_j/ed",
-        "fj_post": "finite_j/r3_thr1e-3/post_run",
     },
 }
 
@@ -136,6 +137,36 @@ def _new_layout(atlas_dir, tmp):
     return out
 
 
+EVENT = re.compile(r"\[enrich\] .*k (\d+) -> (\d+) \(([\d.]+)s\)")
+
+
+def build_cost(src, campaign, config):
+    """Extra entries of the ROM summary: event_wall_s, the wall time of the enrichment events of `config`
+    (candidate selection included) for an atlas that did not record it, read from the captured output
+    of its enrich step under --logs, and compress_s / m_compressed from the compression record."""
+    out = {}
+    root = os.path.basename(os.path.normpath(src["raw"]))
+    where = re.compile(r"outdir=\S*%s/%s/([^/\s]+)/(\w+_run)/" % (re.escape(root), campaign))
+    for log in sorted(glob.glob(os.path.join(src["logs"], "*"))) if src.get("logs") else []:
+        cur, walls = None, []
+        for line in open(log, errors="replace"):
+            m = where.search(line)
+            if m:
+                cur = m.group(1)
+                continue
+            m = EVENT.search(line)
+            if m and cur == config:
+                walls.append(float(m.group(3)))
+        if walls:
+            out["event_wall_s"] = float(sum(walls))
+    rec = os.path.join(src["raw"], campaign, config, "compression.json")
+    if src.get("compressed") and os.path.exists(rec):
+        c = json.load(open(rec))
+        out.update(compress_s=c["seconds"], compress_tol=c["tol"],
+                   m_compressed=float(np.mean([x for v in c["m_compressed"].values() for x in v.values()])))
+    return out
+
+
 # ----------------------------------------------------------------------------- figures
 
 def fig5(src, n_tests=15):
@@ -171,7 +202,33 @@ def fig6(src, npts=100):
         out["configs"][c] = dict(r=int(c[1]), thr=float(c.split("thr")[1]), k=s["k"], k_off=s["k_off"],
                                  m=s["m"], ec_tol=s["ec_tol"],
                                  calls={p: solver_calls(os.path.join(runs[c], p)) for p in rels})
+    b2b = src.get("n8_timing")
+    if b2b and os.path.exists(b2b):
+        # ED and the ROMs timed back to back on one node (campaigns/time_solvers.py) replace the
+        # times logged by the separate sweeps, which do not share one machine load.
+        t = json.load(open(b2b))
+        out.update(shared=t["shared"], ed=t["ed"], timing=dict(source="back_to_back", host=t["host"],
+                                                                 started=t["started"], reps=t["reps_per_call"]))
+        for c in N8_CFGS:
+            out["configs"][c]["calls"] = t["configs"][c]["calls"]
+            cc = c + "+" + (src.get("compressed") or "")
+            if cc in t["configs"]:  # the same ROM after compression, timed in the same job
+                out["configs"][c]["compressed"] = dict(calls=t["configs"][cc]["calls"],
+                                                       **build_cost(src, "n8ni2", c))
+        print(f"timings: back to back on {t['host']} ({len(t['shared'])} points)")
+    else:
+        print("timings: from the sweep logs (no back-to-back file)")
     _save("fig6_timing.json", out)
+    # Fig. 6(c): error channels and timings against the compression tolerance (campaigns/tolerance_scan.py and
+    # time_solvers.py --compressed TOL ..., all tolerances timed in one job)
+    scan = os.path.join(src["raw"], "n8ni2")
+    if os.path.exists(os.path.join(scan, "tolerance_scan_errors.json")):
+        shutil.copy(os.path.join(scan, "tolerance_scan_errors.json"), os.path.join(DATA, "fig6_tolerance.json"))
+        print("copied tolerance_scan_errors.json")
+    if os.path.exists(os.path.join(scan, "timing_tolerance_scan.json")):
+        t = json.load(open(os.path.join(scan, "timing_tolerance_scan.json")))
+        _save("fig6_tolerance_timing.json", dict(host=t["host"], shared=t["shared"], ed=t["ed"],
+                                                 configs={c: v["calls"] for c, v in t["configs"].items()}))
 
 
 def fig6_compute(src, npts=100, kstep=20):
@@ -253,12 +310,18 @@ def fig7_8(src):
     # The cumulative-cost curve runs through the points in (U, mu) order; mu is the physical
     # chemical potential, the negative of the value in the directory name.
     recs.sort(key=lambda r: (r["U"], r["mu"]))
-    _save("fig7_8_doping.json", dict(points=recs, rom=legacy.rom_summary(src["n10_atlas"])))
+    out = dict(points=recs, rom=dict(build_cost(src, "n10ni1", "r3_thr1e-1"), **legacy.rom_summary(src["n10_atlas"])))
+    b2b = src.get("n10_timing")
+    if b2b and os.path.exists(b2b):  # per-call speedups from ED and the ROM timed in turn on one node
+        t = json.load(open(b2b))
+        calls = t["configs"]["r3_thr1e-1" + ("+" + src["compressed"] if src.get("compressed") else "")]["calls"]
+        out["timing"] = dict(host=t["host"], points=[[t["ed"][p], calls[p]] for p in t["shared"] if p in calls])
+    _save("fig7_8_doping.json", out)
 
 
 def fig9(src, bwrs=(0.1, 0.2, 0.5), cfg="r3_thr1e-4"):
     """Coarse scan with online enrichment: Z per band and solver time per (bwr, U)."""
-    out = {"rom": legacy.rom_summary(src["n8_atlas"](cfg)), "bwr": {}}
+    out = {"rom": dict(build_cost(src, "n8ni2", cfg), **legacy.rom_summary(src["n8_atlas"](cfg))), "bwr": {}}
     for bwr in bwrs:
         entry = {}
         for tag, base in (("ed", src["n8_ed_coarse"]), ("mor", src["n8_enrich"](cfg))):
@@ -317,43 +380,26 @@ def fig11(src, cfg="r3_thr1e-4", bwr=0.15, Us=(2.0, 6.0), n_w=1000, eta=0.05, w_
     _save("fig11_spectra.npz", out)
 
 
-def finite_j(src):
-    """Matched ED / MOR+EC points of the finite-J sweep (not in the paper)."""
-    def scan(base):
-        runs = {}
-        for p in points(base):
-            parts = p.split(os.sep)
-            meta = json.load(open(os.path.join(base, p, "dmft_metadata.json")))
-            runs[(round(meta["bw_ratios"][-1], 6), parts[-2], round(float(parts[-1][1:]), 6))] = os.path.join(base, p)
-        return runs
-
-    ed, mor = scan(src["fj_ed"]), scan(src["fj_post"])
-    recs = []
-    for key in sorted(set(ed) & set(mor)):
-        a, b = gf_data(ed[key]), gf_data(mor[key])
-        if a is None or b is None:
-            continue
-        conv = [json.load(open(os.path.join(x, "dmft_metadata.json"))).get("converged", False)
-                for x in (ed[key], mor[key])]
-        J = json.load(open(os.path.join(ed[key], "dmft_metadata.json")))["J"]
-        recs.append(dict(bwr=key[0], level=key[1], U=key[2], J=J, Z_ed=z_sigma(a), Z_mor=z_sigma(b),
-                         ed=solver_calls(ed[key]), mor=solver_calls(mor[key]), conv=conv))
-    _save("finite_j.json", dict(points=recs))
-
-
-FIGS = {"fig5": fig5, "fig6": fig6, "fig7_8": fig7_8, "fig9": fig9, "fig10": fig10, "fig11": fig11,
-        "finite_j": finite_j}
+FIGS = {"fig5": fig5, "fig6": fig6, "fig7_8": fig7_8, "fig9": fig9, "fig10": fig10, "fig11": fig11}
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--raw", required=True, help="root of the raw campaign outputs")
     ap.add_argument("--layout", choices=list(LAYOUTS), default="production")
+    ap.add_argument("--compressed", metavar="TAG", help="use the sweeps and timings of the compressed ROM")
+    ap.add_argument("--logs", help="directory of the rebuild job logs")
     ap.add_argument("figs", nargs="*", help=f"subset of {list(FIGS) + ['fig6_compute']}")
     args = ap.parse_args()
     join = lambda v: (lambda c: os.path.join(args.raw, v(c))) if callable(v) else (
         os.path.join(args.raw, v) if v else None)
     src = {k: join(v) for k, v in LAYOUTS[args.layout].items()}
+    src.update(raw=args.raw, logs=args.logs, compressed=args.compressed)
+    if args.compressed:
+        t = args.compressed
+        src.update(n8_fine=join(f"n8ni2/r3_thr1e-4/fine_{t}_run"), n10_post=join(f"n10ni1/r3_thr1e-1/post_{t}_run"),
+                   n8_timing=join("n8ni2/timing_back_to_back_compressed.json"),
+                   n10_timing=join("n10ni1/timing_back_to_back_compressed.json"))
     for name in args.figs or list(FIGS):
         print(f"== {name}")
         (fig6_compute if name == "fig6_compute" else FIGS[name])(src)

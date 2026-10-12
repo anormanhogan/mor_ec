@@ -203,11 +203,9 @@ def orth_precomp(pair):
 
 
 def solution_grams(orth, samples, freqs, n_freq=40, normalize=None, freq_weight=0.0):
-    """{sector: Gram matrix of the ROM solution vectors (z - H(theta))^-1 b(theta)} at the n_freq lowest
-    frequencies, over `samples` [(theta, E, alpha)]; the input of compress_orth.
-    normalize: 'column' scales every snapshot to unit norm, 'call' every sample's block, None keeps raw norms.
-    freq_weight p scales the snapshot at frequency w_n by (w_0/w_n)^p.  (Both tested at N=8: raw norms and
-    p=0 were best.)"""
+    """{sector: X X^H} of the ROM solutions x = (z - H(theta))^-1 b(theta) at the n_freq lowest `freqs`,
+    summed over `samples` [(theta, E, alpha)].  normalize ('column', 'call') and freq_weight rescale
+    the snapshots; the defaults (raw norms, no weighting) worked best."""
     grams = {}
     for s, sd in orth.items():
         n_t, m, _ = sd["H_stack"].shape
@@ -229,8 +227,8 @@ def solution_grams(orth, samples, freqs, n_freq=40, normalize=None, freq_weight=
 
 
 def compress_orth(orth, grams, tol=1e-5):
-    """Second-level POD inside the ROM: project each sector of `orth` onto the eigenvectors of its
-    solution Gram (solution_grams) with relative singular values above tol.  Same layout as orth_precomp."""
+    """POD of the ROM: project each sector onto the eigenvectors of its Gram (solution_grams) with
+    relative singular values above tol.  Returns the layout of orth_precomp."""
     out = {}
     for s, sd in orth.items():
         ev, W = la.eigh(grams[s])

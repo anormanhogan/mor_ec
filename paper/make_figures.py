@@ -25,11 +25,12 @@ from matplotlib.gridspec import GridSpec
 from matplotlib.legend_handler import HandlerBase
 from matplotlib.lines import Line2D
 from matplotlib.patches import Circle, Patch, Rectangle
-from matplotlib.ticker import LogLocator, NullFormatter, ScalarFormatter
+from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter, NullLocator, ScalarFormatter
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DATA, OUT = os.path.join(HERE, "data"), os.path.join(HERE, "figures")
+DATA = os.environ.get("MOREC_PAPER_DATA", os.path.join(HERE, "data"))        # set both to keep the published
+OUT = os.environ.get("MOREC_PAPER_FIGURES", os.path.join(HERE, "figures"))   # bundle untouched
 TEX = dict(text_usetex=bool(shutil.which("latex")))
 SERIF = {"text.usetex": TEX["text_usetex"], "font.family": "serif"}
 W1 = 4.0  # full bandwidth of the wide band (half-bandwidth 2)
@@ -177,7 +178,7 @@ def fig5():
     style = {"text.usetex": TEX["text_usetex"], "font.size": 15, "axes.labelsize": 17,
              "xtick.labelsize": 15, "ytick.labelsize": 15, "lines.linewidth": 0.8}
     with plt.rc_context(style):
-        fig = plt.figure(figsize=(6, 5))
+        fig = plt.figure(figsize=(6, 4.2))
         for t in range(n - 1, -1, -1):
             base_z, base_y = (n - t) * 10, shift * t
             color = cmap(0.4 + 0.6 * t / (n - 1)) if t not in highlight else matplotlib.colors.to_rgba("orange")
@@ -203,7 +204,7 @@ def fig5():
         plt.text(w[-40], 1.1, r"$U\ \mathrm{increasing}\ \rightarrow$", fontsize=16, color="black", ha="right",
                  va="bottom", rotation=90, backgroundcolor="white", zorder=500)
         plt.yticks([], [])
-        plt.ylim(-0.5, A_ed[-1].max() + (n + 1) * shift)
+        plt.ylim(-0.5, A_ed[-1].max() + (n + 2) * shift)
         plt.xlim(w[0] + 1, w[-1] - 1)
 
         class Gradient(HandlerBase):
@@ -249,86 +250,156 @@ def _config_speed(t, cfg):
 
 
 def fig6():
-    """GF error split into EC ground-state and ROM resolvent channels, vs r and vs k."""
+    """GF error split into EC ground-state and ROM resolvent channels: vs r (a), vs k (b) and, when the
+    tolerance scan (campaigns/tolerance_scan.py) is in the data, vs the compression tolerance (c)."""
     rows, krows, t = _fig6_data()
+    scan = _json("fig6_tolerance.json") if os.path.exists(os.path.join(DATA, "fig6_tolerance.json")) else None
     STYLE = [(r"$\mathrm{Total}$", "steelblue", "o", "-"), (r"$\mathrm{EC\ ground\ state}$", "coral", "s", "--"),
              (r"$\mathrm{ROM\ resolvent}$", "forestgreen", "^", "-.")]
+    bar = dict(markersize=8, capsize=5, capthick=1.5, linewidth=2, markeredgecolor="black", markeredgewidth=1.5)
+    box = dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="0.7")
+    num = lambda x: ("%.1f" if x < 10 else "%.0f") % x
+
+    def speed_label(ax, xy, s_tot):
+        ax.annotate(r"$%s\times$" % num(s_tot.median), xy, textcoords="offset points", xytext=(0, 14),
+                    ha="center", va="bottom", fontsize=14, color="steelblue",
+                    bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.95, edgecolor="steelblue"))
+
     rs = [z[0] for z in rows]
     a_cfgs = {int(z[0]): f"r{int(z[0])}_thr1e-4" for z in rows}
     with plt.rc_context({"text.usetex": TEX["text_usetex"]}):
-        fig, (ax, axb) = plt.subplots(2, 1, figsize=(7, 8))
+        fig, axes = plt.subplots(1, 3 if scan else 2, figsize=(5.1 * (3 if scan else 2), 4.0))
+        ax, axb = axes[:2]
         for i, (lab, color, mk, ls) in enumerate(STYLE):
             med = [z[3 + 3 * i] for z in rows]
             ax.errorbar(rs, med, yerr=[[z[3 + 3 * i] - z[4 + 3 * i] for z in rows],
                                        [z[5 + 3 * i] - z[3 + 3 * i] for z in rows]],
-                        fmt=mk, ls=ls, color=color, markersize=8, capsize=5, capthick=1.5, linewidth=2,
-                        markeredgecolor="black", markeredgewidth=1.5, label=lab, zorder=3 - i)
+                        fmt=mk, ls=ls, color=color, label=lab, zorder=3 - i, **bar)
         ax.set_yscale("log")
-        ax.set_ylim(min(z[10] for z in rows) / 8, max(max(z[5], z[8], z[11]) for z in rows) * 800)
+        ax.set_ylim(min(z[10] for z in rows) / 8, max(max(z[5], z[8], z[11]) for z in rows) * 3000)
         ax.set_xticks(rs)
-        ax.set_xlim(min(rs) - 0.3, max(rs) + 0.3)
-        ax.set_xlabel(r"$\mathrm{Number\ of\ interpolation\ points}\ r$", fontsize=18)
-        ylab = r"$\bar{\mathcal{E}}^{\mathrm{rel}}(\mathbf{G}^\mathrm{imp}(i\omega_n))$"
-        ax.set_ylabel(ylab, fontsize=18)
-        ax.tick_params(axis="both", which="major", labelsize=18)
-        ax.grid(True, alpha=0.3)
+        ax.set_xlim(min(rs) - 0.4, max(rs) + 0.4)
+        ax.set_xlabel(r"$\mathrm{Interpolation\ points}\ r$", fontsize=18)
+        ax.set_ylabel(r"$\bar{\mathcal{E}}^{\mathrm{rel}}(\mathbf{G}^\mathrm{imp}(i\omega_n))$", fontsize=18)
         offs = {t["configs"][c]["ec_tol"] for c in a_cfgs.values()}
-        ax.legend(fontsize=16, loc="lower left", framealpha=0.85, title_fontsize=16,
-                  title=_thr_tex(1e-4, offs.pop() if len(offs) == 1 else None))
+        thr_a = _thr_tex(1e-4, offs.pop() if len(offs) == 1 else None)
+        ax.text(0.04, 0.06, thr_a, transform=ax.transAxes, ha="left", va="bottom", fontsize=15, bbox=box)
         for z in rows:
-            s_tot = _config_speed(t, a_cfgs[int(z[0])])[2]
-            ax.annotate(r"$%.0f\times$" % s_tot.median, (z[0], z[3]), textcoords="offset points", xytext=(0, 16),
-                        ha="center", va="bottom", fontsize=14, color="steelblue",
-                        bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.95, edgecolor="steelblue"))
+            speed_label(ax, (z[0], z[3]), _config_speed(t, a_cfgs[int(z[0])])[2])
 
         cb = t["configs"]["r4_thr1e-8"]
         kx = [z[0] for z in krows]
         axb.errorbar(kx, [z[1] for z in krows], yerr=[[z[1] - z[2] for z in krows], [z[3] - z[1] for z in krows]],
-                     fmt="s", ls="--", color="coral", markersize=8, capsize=5, capthick=1.5, linewidth=2,
-                     markeredgecolor="black", markeredgewidth=1.5)
-        axb.text(0.97, 0.95, r"$r=%d,\ %s$" % (cb["r"], _thr_tex(cb["thr"], cb["ec_tol"]).strip("$")),
-                 transform=axb.transAxes, ha="right", va="top", fontsize=16,
-                 bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.85, edgecolor="0.7"))
+                     fmt="s", ls="--", color="coral", **bar)
+        axb.text(0.96, 0.95, r"$r=%d,\ %s$" % (cb["r"], _thr_tex(cb["thr"], cb["ec_tol"]).strip("$")),
+                 transform=axb.transAxes, ha="right", va="top", fontsize=15, bbox=box)
         axb.axvline(cb["k_off"], color="0.45", ls=":", lw=1.5, zorder=1)
-        axb.text(cb["k_off"] + 0.01 * (max(kx) - min(kx)), 0.06, r"$k_\mathrm{off}=%d$" % cb["k_off"],
+        axb.text(cb["k_off"] + 0.02 * (max(kx) - min(kx)), 0.05, r"$k_\mathrm{off}=%d$" % cb["k_off"],
                  transform=axb.get_xaxis_transform(), ha="left", va="bottom", fontsize=14, color="0.35")
         axb.set_yscale("log")
         axb.set_xlabel(r"$\mathrm{EC\ basis\ size}\ k$", fontsize=18)
-        axb.set_ylabel(ylab, fontsize=18)
-        axb.tick_params(axis="both", which="major", labelsize=18)
-        axb.grid(True, alpha=0.3)
-        _label_panels([ax, axb], fontsize=18, xloc=-0.15)
-        fig.tight_layout()
+
+        if scan:
+            # the production ROM (bold row of Table I) compressed at each tolerance; the size is read off the top axis
+            axc, cfg = axes[2], "r3_thr1e-4"
+            sc = scan["configs"][cfg]
+            crow = sorted((r for r in sc["rows"] if r["tol"] is not None), key=lambda r: -r["tol"])
+            tols = [r["tol"] for r in crow]
+            q = lambda v: (np.median(v), np.median(v) - np.percentile(v, 25), np.percentile(v, 75) - np.median(v))
+            series = [[q(r["total"]) for r in crow], [q(sc["ec"])] * len(crow), [q(r["resolvent"]) for r in crow]]
+            for (lab, color, mk, ls), ser, zo in zip(STYLE, series, (3, 2, 1)):
+                if ser is series[1]:  # the EC channel does not depend on the tolerance: a level with its quartile band
+                    med, lo_, hi_ = ser[0]
+                    axc.axhspan(med - lo_, med + hi_, color=color, alpha=0.18, lw=0, zorder=0)
+                    axc.axhline(med, color=color, ls=ls, lw=2, zorder=zo)
+                    continue
+                axc.errorbar(tols, [v[0] for v in ser], yerr=[[v[1] for v in ser], [v[2] for v in ser]],
+                             fmt=mk, ls=ls, color=color, zorder=zo, **bar)
+            axc.set_xscale("log")
+            axc.set_yscale("log")
+            axc.set_xlim(max(tols) * 2.5, min(tols) / 2.5)   # looser tolerance, smaller ROM, on the left
+            lo, hi = min(v[0] for ser in series for v in ser), max(v[0] for ser in series for v in ser)
+            axc.set_ylim(lo / 4, hi * 60)
+            axc.set_xlabel(r"$\mathrm{Compression\ tolerance}\ \varepsilon_\mathrm{c}$", fontsize=18)
+            dec = [r for r in crow if np.isclose(np.log10(r["tol"]), round(np.log10(r["tol"])))]
+            axc.set_xticks([r["tol"] for r in dec][::(2 if len(dec) > 4 else 1)])
+            axc.xaxis.set_minor_formatter(NullFormatter())
+            top = axc.secondary_xaxis("top")
+            top.set_xticks([r["tol"] for r in dec])
+            top.set_xticklabels([r"$%d$" % round(np.mean(r["m"])) for r in dec])
+            top.xaxis.set_minor_locator(NullLocator())
+            top.tick_params(axis="x", labelsize=15)
+            top.set_xlabel(r"$\mathrm{Compressed\ size}\ m'_{p/h}$", fontsize=16, labelpad=6)
+            full = next(r for r in sc["rows"] if r["tol"] is None)
+            axc.text(0.96, 0.95, r"$r=%d,\ m_{p/h}=%d$" % (t["configs"][cfg]["r"], round(np.mean(full["m"]))),
+                     transform=axc.transAxes, ha="right", va="top", fontsize=15, bbox=box)
+            # total speedups: every tolerance timed in one job when that scan is in the data (labels at the
+            # decades, which is where they fit), else the one tolerance timed with Table I
+            timed = {}
+            if os.path.exists(os.path.join(DATA, "fig6_tolerance_timing.json")):
+                ts = _json("fig6_tolerance_timing.json")
+                for name, calls in ts["configs"].items():
+                    if name.startswith(cfg + "+c"):
+                        tol_ = float(name[len(cfg) + 2:] or 1e-5)
+                        timed[tol_] = speedup([_sum_calls(ts["ed"][p], calls[p]) for p in ts["shared"] if p in calls])
+            elif t["configs"][cfg].get("compressed"):
+                comp = t["configs"][cfg]["compressed"]
+                timed[comp["compress_tol"]] = speedup([_sum_calls(t["ed"][p], comp["calls"][p]) for p in t["shared"]
+                                                       if p in comp["calls"]])
+            for r, v in zip(crow, series[0]):
+                hit = [s_ for tol_, s_ in timed.items() if np.isclose(tol_, r["tol"], rtol=1e-6)]
+                if hit and r in dec:
+                    speed_label(axc, (r["tol"], v[0]), hit[0])
+        for a in axes:
+            a.tick_params(axis="both", which="major", labelsize=16)
+            a.grid(True, alpha=0.3)
+        fig.legend(*ax.get_legend_handles_labels(), loc="upper center", ncol=3, fontsize=15, frameon=False,
+                   bbox_to_anchor=(0.5, 1.0), columnspacing=2.5)
+        _label_panels(list(axes), fontsize=18, xloc=-0.2, yloc=1.03)
+        fig.tight_layout(rect=(0, 0, 1, 0.93), w_pad=1.2)
         _save(fig, "fig6_gf_error_channels.pdf")
 
 
 def table1():
-    """Per-call solver cost of MOR+EC vs ED on the Fig. 6 points (LaTeX, figures/table1.tex)."""
+    """Per-call solver cost of MOR+EC vs ED on the Fig. 6 points, before and after compression
+    (LaTeX, figures/table1.tex; one column wide)."""
     rows, _, t = _fig6_data()
     cfgs = [("(a)", f"r{int(z[0])}_thr1e-4") for z in rows] + [("(b)", "r4_thr1e-8")]
     ms = lambda calls, pts, i: 1e3 * np.mean([x for p in pts for x in calls[p][i][1:]])
-    body, prev = [], None
-    print(f"{'':4}{'r':>3}{'k_off':>6}{'k':>5}{'m':>6}{'n':>5} | {'GS ms':>7}{'GF ms':>8} | "
-          f"{'GS speed-up':>16}{'GF speed-up':>16}{'total':>16}")
+    n = lambda x: ("%.1f" if x < 10 else "%.0f") % x
+    body, prev, gs_ms = [], None, {}
+    print(f"{'':4}{'r':>3}{'k':>5}{'m':>6} | {'GS ms':>6}{'GF ms':>8}{'GS':>7}{'GF':>7}{'total':>7} | "
+          f"{'m_c':>5}{'GF ms':>7}{'GF':>7}{'total':>7}")
     for tag, c in cfgs:
         cfg = t["configs"][c]
         s_gs, s_gf, s_tot, pts = _config_speed(t, c)
         gs, gf = ms(cfg["calls"], pts, 0), ms(cfg["calls"], pts, 1)
-        print(f"{tag:4}{cfg['r']:3d}{cfg['k_off']:6d}{cfg['k']:5d}{cfg['m']:6.0f}{len(pts):5d} | {gs:7.2f}{gf:8.2f} | "
-              f"{fmt(s_gs):>16}{fmt(s_gf):>16}{fmt(s_tot):>16}")
+        gs_ms.setdefault(tag, []).append(gs)
+        line = rf"    {tag} & {cfg['r']} & {cfg['m']:.0f} & {gf:.2f} & ${n(s_tot.median)}\times$"
+        log = (f"{tag:4}{cfg['r']:3d}{cfg['k']:5d}{cfg['m']:6.0f} | {gs:6.2f}{gf:8.2f}{n(s_gs.median):>7}"
+               f"{n(s_gf.median):>7}{n(s_tot.median):>7} | ")
+        comp = cfg.get("compressed")
+        if comp:
+            cp = [p for p in t["shared"] if p in comp["calls"]]
+            c_gf, c_tot = (speedup([(t["ed"][p][1], comp["calls"][p][1]) for p in cp]),
+                           speedup([_sum_calls(t["ed"][p], comp["calls"][p]) for p in cp]))
+            line += rf" & {comp['m_compressed']:.0f} & {ms(comp['calls'], cp, 1):.2f} & ${n(c_tot.median)}\times$ \\"
+            log += f"{comp['m_compressed']:5.0f}{ms(comp['calls'], cp, 1):7.2f}{n(c_gf.median):>7}{n(c_tot.median):>7}"
+        else:
+            line += r" & -- & -- & -- \\"
+        print(log)
         if prev is not None and prev != tag:
             body.append(r"    \midrule")
         prev = tag
-        n = lambda x: ("%.1f" if x < 10 else "%.0f") % x
-        body.append(rf"    {tag} & {cfg['r']} & {cfg['m']:.0f} & {gs:.2f} & {gf:.2f} & "
-                    rf"{n(s_gs.median)}$\times$ & {n(s_gf.median)}$\times$ & {n(s_tot.median)}$\times$ \\")
+        body.append(line)
     ed_ms = [ms(t["ed"], [p for p in t["shared"] if p in t["ed"]], i) for i in (0, 1)]
     tex = "\n".join([r"% requires \usepackage{booktabs}", r"\begin{tabular}{@{}llrrrrrr@{}}", r"    \toprule",
-                     r"     & & & \multicolumn{2}{c}{MOR+EC (ms)} & \multicolumn{3}{c}{Speedup} \\",
-                     r"    \cmidrule(lr){4-5}\cmidrule(lr){6-8}",
-                     r"    Panel & $r$ & $m_{p/h}$ & GS & GF & GS & GF & total \\", r"    \midrule", *body,
-                     r"    \bottomrule", r"\end{tabular}",
-                     f"% ED reference: {ed_ms[0]:.0f} ms GS, {ed_ms[1]:.0f} ms GF per call", ""])
+                     r"     & & \multicolumn{3}{c}{Uncompressed} & \multicolumn{3}{c}{Compressed} \\",
+                     r"    \cmidrule(lr){3-5}\cmidrule(lr){6-8}",
+                     r"    Panel & $r$ & $m_{p/h}$ & GF (ms) & total & $m'_{p/h}$ & GF (ms) & total \\", r"    \midrule",
+                     *body, r"    \bottomrule", r"\end{tabular}",
+                     f"% ED reference: {ed_ms[0]:.0f} ms GS, {ed_ms[1]:.0f} ms GF per call",
+                     "% MOR+EC GS: " + ", ".join(f"{k} {np.mean(v):.2f} ms" for k, v in gs_ms.items()), ""])
     os.makedirs(OUT, exist_ok=True)
     open(os.path.join(OUT, "table1.tex"), "w").write(tex)
     print("wrote figures/table1.tex")
@@ -341,46 +412,49 @@ def _doping():
     return d["points"], d["rom"]
 
 
+def _build_minutes(rom):
+    """(offline, online, compression) minutes of a ROM.  Online is the wall time of the enrichment events
+    when the job log gave it (candidate selection included), else the recorded basis and projection updates."""
+    online = rom.get("event_wall_s", rom["enrich_ec_s"] + rom["enrich_mor_s"])
+    return (rom["ec_s"] + rom["mor_s"]) / 60.0, online / 60.0, rom.get("compress_s", 0.0) / 60.0
+
+
 def fig7():
     """Cumulative impurity-solver time vs solver calls: break-even of the ROM build."""
     pts, rom = _doping()
     ed_seq = np.concatenate([np.add(*p["ed"]) for p in pts])
     mo_seq = np.concatenate([np.add(*p["mor"]) for p in pts])
-    rom_min = (rom["ec_s"] + rom["mor_s"] + rom["enrich_ec_s"] + rom["enrich_mor_s"]) / 60.0
+    rom_min = sum(_build_minutes(rom))
     ed_cum, mo_cum = np.cumsum(ed_seq) / 60.0, rom_min + np.cumsum(mo_seq) / 60.0
     n_ed, n_mo = len(ed_seq), len(mo_seq)
     with plt.rc_context(SERIF):
-        fig, ax = plt.subplots(figsize=(7.0, 4.6))
-        x_max, y_top = int(max(n_ed, n_mo) * 1.04), ed_cum[-1] * 1.16
+        fig, ax = plt.subplots(figsize=(7.0, 4.3))
+        x_max, y_top = int(max(n_ed, n_mo) * 1.04), ed_cum[-1] * 1.36  # headroom for the legend
         ax.plot(np.arange(1, n_ed + 1), ed_cum, "-", color="k", linewidth=3.0, zorder=4, label=r"\textrm{ED}")
         ax.plot(np.arange(1, n_mo + 1), mo_cum, "-", color="steelblue", linewidth=3.5, zorder=4,
-                label=r"\textrm{MOR+EC}")
+                label=rf"\textrm{{MOR+EC, with the ROM build (}}${rom_min:.1f}$ \textrm{{min)}}")
         for n_, y, c in ((n_ed, ed_cum[-1], "k"), (n_mo, mo_cum[-1], "steelblue")):
             ax.plot([n_], [y], "o", color=c, markersize=12, markeredgecolor="w", markeredgewidth=1.5, zorder=6)
         ax.legend(loc="upper left", fontsize=16, framealpha=0.9)
-        x_b = x_max * 0.34
-        ax.annotate("", xy=(x_b, 0), xytext=(x_b, rom_min), arrowprops=dict(arrowstyle="<->", color="steelblue", lw=2))
-        ax.text(x_b + x_max * 0.025, rom_min * 0.50, rf"\textrm{{ROM build}}: ${rom_min:.0f}$ \textrm{{min}}",
-                fontsize=16, color="steelblue", ha="left", va="center")
         n_ov = min(n_ed, n_mo)
         below = np.nonzero(mo_cum[:n_ov] < ed_cum[:n_ov])[0]
         n_be = int(below[0] + 1) if below.size else None
         if n_be is not None:
-            ax.plot([n_be, n_be], [0, ed_cum[n_be - 1]], "-.", color="firebrick", linewidth=2, zorder=3)
-            ax.text(n_be + x_max * 0.0001 - 500, y_top * 0.32,
+            ax.plot([n_be, n_be], [0, y_top * 0.27], "-.", color="firebrick", linewidth=2, zorder=3)
+            ax.text(n_be + x_max * 0.03, y_top * 0.31,
                     r"\textrm{break-even}" + "\n" + rf"$n_{{\mathrm{{solve}}}}={n_be}$",
                     fontsize=16, color="firebrick", ha="left", va="center")
-        ins = ax.inset_axes([0.57, 0.23, 0.38, 0.27])
+        ins = ax.inset_axes([0.62, 0.20, 0.34, 0.27])
         solo = mo_cum - rom_min
         ins.plot(np.arange(1, n_mo + 1), solo, "-", color="steelblue", lw=2.5)
         ins.plot([n_mo], [solo[-1]], "o", color="steelblue", markersize=7, markeredgecolor="w",
                  markeredgewidth=1.0, zorder=6)
-        ins.set_title(r"\textrm{MOR+EC solve only}", fontsize=16, color="steelblue", pad=4)
-        ins.set_ylabel(r"\textrm{min}", fontsize=16)
+        ins.text(0.05, 0.92, r"\textrm{MOR+EC solves (min)}", transform=ins.transAxes, fontsize=13,
+                 color="steelblue", ha="left", va="top")
         ins.set_xlim(0, x_max)
-        ins.set_ylim(0, solo[-1] * 1.15)
+        ins.set_ylim(0, solo[-1] * 1.6)
         ins.set_xticks([0, 5000])
-        ins.tick_params(axis="both", labelsize=16)
+        ins.tick_params(axis="both", labelsize=14)
         ins.grid(True, alpha=0.3)
         ax.set_xlabel(r"\textrm{Impurity solver calls} $n_{\mathrm{solve}}$", fontsize=18)
         ax.set_ylabel(r"\textrm{Cumulative solver time (min)}", fontsize=18)
@@ -392,7 +466,8 @@ def fig7():
         _save(fig, "fig7_break_even.pdf", dpi=300)
     s_tot = speedup([_sum_calls(p["ed"], p["mor"]) for p in pts])
     print(f"  {len(pts)} points; ED {n_ed} calls {ed_cum[-1]:.0f} min; MOR+EC {n_mo} calls "
-          f"{np.sum(mo_seq) / 60:.1f} min + ROM {rom_min:.0f} min ({rom['n_events']} enrichment events); "
+          f"{np.sum(mo_seq) / 60:.2f} min + ROM {rom_min:.2f} min = offline/online/compression "
+          f"{'/'.join('%.2f' % v for v in _build_minutes(rom))} ({rom['n_events']} enrichment events); "
           f"break-even n_solve={n_be}; per-call speed-up {fmt(s_tot)}")
 
 
@@ -402,7 +477,7 @@ def fig8():
     W = 4.0
     Us, mus = np.array(sorted({p["U"] for p in pts})), np.array(sorted({p["mu"] for p in pts}))
     with plt.rc_context(SERIF | {"hatch.linewidth": 1.0}):
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7.0, 8.6), sharex=True)
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7.0, 7.0), sharex=True)
         cax1 = make_axes_locatable(ax1).append_axes("right", size="3.5%", pad=0.10)
         cax2 = make_axes_locatable(ax2).append_axes("right", size="3.5%", pad=0.10)
         unorm = plt.Normalize(vmin=Us.min() / W, vmax=Us.max() / W)
@@ -428,7 +503,9 @@ def fig8():
         cb1.set_label(r"$U/W$", fontsize=18)
         cb1.ax.tick_params(labelsize=16)
 
-        stats = [speedup([(p["ed"][i], p["mor"][i]) for p in pts]) for i in (0, 1)]
+        timed = _json("fig7_8_doping.json").get("timing")  # ED and the ROM timed in turn on one node
+        pairs = timed["points"] if timed else [(p["ed"], p["mor"]) for p in pts]
+        stats = [speedup([(e[i], m[i]) for e, m in pairs]) for i in (0, 1)]
         ax_bar = ax1.inset_axes([0.70, 0.50, 0.28, 0.47])
         y_floor = min(s.lo for s in stats) * 0.55
         for pos, s, col in zip([0, 1], stats, ["#d62728", "#1f77b4"]):
@@ -564,7 +641,8 @@ def fig9(Z_thresh=1e-2):
 
         ed_total = stack(ax_t, 0, 0)
         off_total = pair(ax_t, 1, rom["ec_s"] / 60.0, rom["mor_s"] / 60.0)
-        on_total = pair(ax_t, 2, rom["enrich_ec_s"] / 60.0, rom["enrich_mor_s"] / 60.0)
+        # everything in an enrichment event that is not the projection update selects the basis
+        on_total = pair(ax_t, 2, _build_minutes(rom)[1] - rom["enrich_mor_s"] / 60.0, rom["enrich_mor_s"] / 60.0)
         mor_total = stack(ax_t, 3, 1)
         for pos, total in zip(range(4), [ed_total, off_total, on_total, mor_total]):
             ax_t.annotate(rf"$\mathbf{{{total:.2f}}}$", xy=(pos, total), xytext=(0, 5), textcoords="offset points",
@@ -574,25 +652,12 @@ def fig9(Z_thresh=1e-2):
         ax_t.set_ylabel(r"\textrm{Solver Time (min)}", fontsize=20, labelpad=4)
         ax_t.tick_params(axis="y", labelsize=19)
         ax_t.set_xlim(-0.5, 3.5)
-        ax_t.set_ylim(0, ed_total * 1.85)
+        ax_t.set_ylim(0, max(ed_total, on_total) * 1.6)
         ax_t.legend(handles=[Patch(facecolor=cmaps[i % 3](0.6), label=rf"$t_2/t_1={b:.2f}$")
                              for i, b in enumerate(sorted(times, reverse=True))]
                     + [Patch(facecolor="mediumpurple", label=r"\textrm{Basis Selection}"),
                        Patch(facecolor="gold", label=r"\textrm{Projection Build}")],
                     loc="upper left", fontsize=14, ncol=2)
-        ins = ax_t.inset_axes([0.58, 0.32, 0.40, 0.4])
-        pair(ins, 0, rom["ec_s"] / 60.0, rom["mor_s"] / 60.0)
-        pair(ins, 1, rom["enrich_ec_s"] / 60.0, rom["enrich_mor_s"] / 60.0)
-        stack(ins, 2, 1)
-        for pos, total in zip(range(3), [off_total, on_total, mor_total]):
-            ins.annotate(rf"$\mathbf{{{total:.2f}}}$", xy=(pos, total), xytext=(0, 3), textcoords="offset points",
-                         ha="center", va="bottom", fontsize=16)
-        ins.set_xticks(range(3))
-        ins.set_xticklabels([r"\textrm{Offline}", r"\textrm{Online}", r"\textrm{MOR+EC}"], fontsize=16)
-        ins.set_ylabel(r"\textrm{Solver Time (min)}", fontsize=16)
-        ins.tick_params(axis="both", labelsize=14)
-        ins.set_xlim(-0.5, 2.5)
-        ins.set_ylim(0, max(off_total, on_total, mor_total, 1e-9) * 1.2)
         ax_z[0].text(-0.15, 1.02, r"$\mathrm{a)}$", transform=ax_z[0].transAxes, fontsize=20, fontweight="bold",
                      va="bottom", ha="left")
         ax_t.text(-0.1, 1.02, r"$\mathrm{b)}$", transform=ax_t.transAxes, fontsize=20, fontweight="bold",
@@ -723,7 +788,7 @@ def fig10(Z_thr=1e-2, Z_floor=1e-2, exclude_ed_bwr=(0.25, 0.35, 0.45)):
             print(f"  {lab} speed-up (all bwr): {fmt(s)} per point over {s.n_points} points; {s.aggregate:.0f}x aggregate")
         slots = {b: k for k, b in enumerate(sorted({b for i in (0, 1) for b, _ in bars[i]}))}
         floor = min(s.lo for i in (0, 1) for _, s in bars[i]) * 0.55
-        top = max(s.hi for i in (0, 1) for _, s in bars[i]) * 2.0
+        top = max(s.hi for i in (0, 1) for _, s in bars[i]) * 5.0  # headroom for the legend above the labels
         for i, off, col, lab in ((0, -0.19, "#d62728", r"$\mathrm{GS}$"), (1, 0.19, "#1f77b4", r"$\mathrm{GF}$")):
             x = np.array([slots[b] for b, _ in bars[i]], float) + off
             med = np.array([s.median for _, s in bars[i]])
@@ -731,7 +796,8 @@ def fig10(Z_thr=1e-2, Z_floor=1e-2, exclude_ed_bwr=(0.25, 0.35, 0.45)):
             ax_r.bar(x, med - floor, bottom=floor, width=0.34, yerr=err, capsize=3, ecolor="black", color=col,
                      alpha=0.85, zorder=3, label=lab)
             for xi, m, h in zip(x, med, err[1]):
-                ax_r.annotate(rf"${m:.0f}\times$", xy=(xi, m + h), xytext=(0, 3), textcoords="offset points",
+                ax_r.annotate(rf"${m:.1f}\times$" if m < 10 else rf"${m:.0f}\times$", xy=(xi, m + h), xytext=(0, 3),
+                              textcoords="offset points",
                               ha="center", va="bottom", fontsize=11, zorder=6,
                               bbox=dict(boxstyle="round,pad=0.18", facecolor="white", alpha=0.95, edgecolor=col,
                                         linewidth=0.9))
@@ -741,7 +807,7 @@ def fig10(Z_thr=1e-2, Z_floor=1e-2, exclude_ed_bwr=(0.25, 0.35, 0.45)):
         ax_r.set_yscale("log")
         ax_r.set_ylim(floor, top)
         ax_r.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 5.0), numticks=12))
-        ax_r.yaxis.set_major_formatter(ScalarFormatter())
+        ax_r.yaxis.set_major_formatter(FuncFormatter(lambda v, _: rf"${v:g}$"))  # math mode; 0.5 must not print as 0
         ax_r.yaxis.set_minor_formatter(NullFormatter())
         ax_r.yaxis.set_label_position("right")
         ax_r.yaxis.tick_right()
@@ -762,7 +828,7 @@ def fig11():
     d = np.load(os.path.join(DATA, "fig11_spectra.npz"))
     w = d["w"]
     with plt.rc_context(SERIF):
-        fig, axes = plt.subplots(2, 1, figsize=(7.5, 5.0), sharex="col")
+        fig, axes = plt.subplots(2, 1, figsize=(7.5, 4.6), sharex="col")
         for ax, U in zip(axes, d["U"]):
             G_ed, G_mo = d[f"G_ed_U{U:g}"], d[f"G_mor_U{U:g}"]
             ax.plot(w, -G_ed.imag / np.pi, "k-", linewidth=1.8)
@@ -788,154 +854,8 @@ def fig11():
         _save(fig, "fig11_real_frequency.pdf", dpi=300)
 
 
-# ----------------------------------------------------------------------------- finite J (not in the paper)
-
-def finite_j(ju_max=0.6, err_floor=1e-4, err_ceil=1.0):
-    """ED vs MOR+EC at finite J/U: Z maps, Z in the (J/U, U/W1) plane, relative Z error, speed-up."""
-    recs = _json("finite_j.json")["points"]
-    for r in recs:
-        r["ju"] = float(r["level"][2:])
-    jus, bwrs, Us = (sorted({r[k] for r in recs}) for k in ("ju", "bwr", "U"))
-    y = np.array(Us) / W1
-    cmap = LinearSegmentedColormap.from_list("inferno_log", [plt.cm.inferno(x) for x in np.linspace(0, 1, 170)], N=512)
-    znorm = LogNorm(vmin=1e-2, vmax=1.0)
-    style = {"text.usetex": TEX["text_usetex"], "font.size": 12, "axes.labelsize": 13, "axes.titlesize": 13,
-             "xtick.labelsize": 11, "ytick.labelsize": 11}
-
-    def grid(key, o):
-        g = np.full((len(jus), len(bwrs), len(Us)), np.nan)
-        for r in recs:
-            g[jus.index(r["ju"]), bwrs.index(r["bwr"]), Us.index(r["U"])] = r[key][o]
-        return g
-
-    def edges(a):
-        a = np.asarray(a, float)
-        if len(a) == 1:
-            return np.array([a[0] - (abs(a[0]) * 0.1 or 0.5), a[0] + (abs(a[0]) * 0.1 or 0.5)])
-        e = np.empty(len(a) + 1)
-        e[1:-1] = (a[:-1] + a[1:]) / 2
-        e[0], e[-1] = a[0] - (a[1] - a[0]) / 2, a[-1] + (a[-1] - a[-2]) / 2
-        return e
-
-    def mesh(ax, xs, ys, ZZ, cm_, norm):
-        Xe, Ye = np.meshgrid(edges(xs), edges(ys))
-        p = ax.pcolormesh(Xe, Ye, ZZ, cmap=cm_, norm=norm, rasterized=True)
-        ax.set_xlim(Xe[0, 0], Xe[0, -1])
-        ax.set_ylim(Ye[0, 0], Ye[-1, 0])
-        return p
-
-    G = {(k, o): grid(k, o) for k in ("Z_ed", "Z_mor") for o in (0, 1)}
-    fields = [(("Z_ed", 0), r"$\mathrm{ED}$", r"$Z_1$"), (("Z_mor", 0), r"$\mathrm{MOR{+}EC}$", r"$Z_1$"),
-              (("Z_ed", 1), r"$\mathrm{ED}$", r"$Z_2$"), (("Z_mor", 1), r"$\mathrm{MOR{+}EC}$", r"$Z_2$")]
-    tag = r"$r=3,\ \mathrm{thr}=\mathrm{1e{-}3}$"
-    with plt.rc_context(style):
-        fig, axs = plt.subplots(len(jus), 4, figsize=(9.0, 1.55 * len(jus) + 1.0), squeeze=False, sharex=True,
-                                sharey=True)
-        for ij, ju in enumerate(jus):
-            for ic, (key, who, zl) in enumerate(fields):
-                ax = axs[ij][ic]
-                pcm = mesh(ax, bwrs, y, G[key][ij].T, cmap, znorm)
-                if ij == 0:
-                    ax.set_title(zl + r"$,\ $" + who, fontsize=12, pad=6)
-                if ic == 0:
-                    ax.set_ylabel(r"$U/W_1$")
-                    ax.text(-0.55, 0.5, rf"$J/U={ju:g}$", transform=ax.transAxes, rotation=90, va="center",
-                            ha="center", fontsize=12)
-                if ij == len(jus) - 1:
-                    ax.set_xlabel(r"$t_2/t_1$")
-                ax.set_xticks(bwrs)
-                ax.tick_params(labelsize=10)
-        fig.suptitle(tag, fontsize=13)
-        fig.tight_layout(rect=[0.03, 0.0, 0.90, 0.97])
-        cb = fig.colorbar(pcm, cax=fig.add_axes([0.92, 0.18, 0.018, 0.64]))
-        cb.ax.set_title(r"$Z_i$", fontsize=14, pad=8)
-        _save(fig, "finite_j_Z_maps.pdf")
-
-        cols = [i for i, ju in enumerate(jus) if ju <= ju_max]
-        fig, axs = plt.subplots(4, len(bwrs), figsize=(2.4 * len(bwrs) + 1.2, 8.4), squeeze=False, sharex=True,
-                                sharey=True)
-        for ir, (key, who, zl) in enumerate(fields):
-            for ib, b in enumerate(bwrs):
-                ax = axs[ir][ib]
-                m = mesh(ax, [jus[i] for i in cols], y, G[key][cols][:, ib, :].T, cmap, znorm)
-                ax.set_xticks([jus[i] for i in cols][::-(-len(cols) // 6)])
-                if ir == 0:
-                    ax.set_title(rf"$t_2/t_1={b:g}$", fontsize=12)
-                if ir == 3:
-                    ax.set_xlabel(r"$J/U$")
-                if ib == 0:
-                    ax.set_ylabel(zl + r"$,\ $" + who + "\n" + r"$U/W_1$", fontsize=11)
-                ax.tick_params(labelsize=10)
-        fig.suptitle(tag, fontsize=13)
-        fig.tight_layout(rect=[0.0, 0.0, 0.90, 0.96])
-        cb = fig.colorbar(m, cax=fig.add_axes([0.92, 0.18, 0.018, 0.64]))
-        cb.ax.set_title(r"$Z_i$", fontsize=14, pad=8)
-        _save(fig, "finite_j_Z_JU.pdf")
-
-        with np.errstate(divide="ignore", invalid="ignore"):
-            E = [np.abs(G[("Z_mor", o)] - G[("Z_ed", o)]) / np.where(G[("Z_ed", o)] > 0, G[("Z_ed", o)], np.nan)
-                 for o in (0, 1)]
-        fig, axs = plt.subplots(2, len(jus), figsize=(1.35 * len(jus) + 2.0, 5.2), squeeze=False, sharex=True,
-                                sharey=True)
-        for row in range(2):
-            for ij, ju in enumerate(jus):
-                ax = axs[row][ij]
-                pcm = mesh(ax, bwrs, y, np.clip(E[row][ij].T, err_floor, err_ceil), plt.cm.viridis,
-                           LogNorm(vmin=err_floor, vmax=err_ceil))
-                if row == 0:
-                    ax.set_title(rf"$J/U={ju:g}$", fontsize=12)
-                else:
-                    ax.set_xlabel(r"$t_2/t_1$")
-                if ij == 0:
-                    ax.set_ylabel(rf"$Z_{row + 1}$" + "\n" + r"$U/W_1$")
-                ax.set_xticks(bwrs)
-                ax.tick_params(labelsize=9)
-        fig.suptitle(tag + r"$\ \ |\Delta Z|/Z_{\mathrm{ED}}$", fontsize=13)
-        fig.tight_layout(rect=[0.0, 0.0, 0.88, 0.95])
-        cb = fig.colorbar(pcm, cax=fig.add_axes([0.90, 0.15, 0.02, 0.7]), extend="max")
-        cb.ax.set_title(r"$|\Delta Z|/Z$", fontsize=12, pad=8)
-        _save(fig, "finite_j_Z_error.pdf")
-
-        fig, axs = plt.subplots(1, 2, figsize=(9.5, 3.8))
-        for ax, field, xlabel, ticks in ((axs[0], "ju", r"$J/U$", jus), (axs[1], "bwr", r"$t_2/t_1$", bwrs)):
-            groups = {v: [(speedup([(r["ed"][i], r["mor"][i]) for r in recs if r[field] == v])) for i in (0, 1)]
-                      for v in ticks}
-            vals = [v for v in ticks if groups[v][0] or groups[v][1]]
-            lo_all, hi_all = [], []
-            for off, i, col, lab in ((-0.19, 0, "#d62728", r"$\mathrm{GS}$"), (0.19, 1, "#1f77b4", r"$\mathrm{GF}$")):
-                st = [(k, groups[v][i]) for k, v in enumerate(vals) if groups[v][i]]
-                med = np.array([s.median for _, s in st])
-                err = np.array([[s.median - s.lo for _, s in st], [s.hi - s.median for _, s in st]])
-                lo_all += [s.lo for _, s in st]
-                hi_all += [s.hi for _, s in st]
-                xs = np.array([k for k, _ in st]) + off
-                ax.bar(xs, med, width=0.34, yerr=err, capsize=3, ecolor="black", color=col, alpha=0.85, zorder=3,
-                       label=lab)
-                for xi, m, h in zip(xs, med, err[1]):
-                    ax.annotate((r"$%.1f\times$" if m < 10 else r"$%.0f\times$") % m, xy=(xi, m + h), xytext=(0, 3),
-                                textcoords="offset points", ha="center", va="bottom", fontsize=9, zorder=6)
-            ax.set_xticks(np.arange(len(vals)))
-            ax.set_xticklabels([rf"${v:g}$" for v in vals])
-            ax.set_xlabel(xlabel)
-            ax.set_yscale("log")
-            ax.set_ylim(min(lo_all) * 0.6, max(hi_all) * 2.5)
-            ax.yaxis.set_major_locator(LogLocator(base=10.0, subs=(1.0, 2.0, 5.0), numticks=12))
-            ax.yaxis.set_major_formatter(ScalarFormatter())
-            ax.yaxis.set_minor_formatter(NullFormatter())
-            ax.grid(True, linestyle="--", alpha=0.5, axis="y", which="major")
-            ax.grid(True, linestyle=":", alpha=0.25, axis="y", which="minor")
-        axs[0].set_ylabel(r"$\mathrm{Speedup\ (ED\,/\,MOR{+}EC)}$")
-        axs[0].legend(fontsize=10, framealpha=0.7, loc="upper right", ncol=2)
-        fig.suptitle(tag, fontsize=13)
-        fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.94])
-        _save(fig, "finite_j_timing.pdf")
-    e0 = np.array([abs(r["Z_mor"][0] - r["Z_ed"][0]) / r["Z_ed"][0] for r in recs if r["Z_ed"][0] > 0])
-    e1 = np.array([abs(r["Z_mor"][1] - r["Z_ed"][1]) / r["Z_ed"][1] for r in recs if r["Z_ed"][1] > 0])
-    print(f"  {len(recs)} matched points; |dZ|/Z median {np.median(e0):.2e} (Z_1), {np.median(e1):.2e} (Z_2)")
-
-
 FIGS = {"fig4": fig4, "fig5": fig5, "fig6": fig6, "table1": table1, "fig7": fig7, "fig8": fig8, "fig9": fig9,
-        "fig10": fig10, "fig11": fig11, "finite_j": finite_j}
+        "fig10": fig10, "fig11": fig11}
 
 if __name__ == "__main__":
     for name in sys.argv[1:] or list(FIGS):

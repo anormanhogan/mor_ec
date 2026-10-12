@@ -16,7 +16,7 @@ from .bath import full_bath, reduce_full_to_free, sample_baths_local
 from .bethe import bethe_gf, fit_bath_general, fit_bath_symmetric, hybridization, is_causal, quasiparticle_weight
 from .ec import append_h2_terms, canonical_gs, greedy_grow, h2_terms, solve_reduced
 from .ed import EDSolver
-from .hamiltonian import AIM, mu_half_filling
+from .hamiltonian import AIM, affine_theta, mu_half_filling
 from .atlas import Atlas
 
 # Above this occupancy the bath fit uses only the warm start (extra starts only help n -> 0).
@@ -66,6 +66,7 @@ class MORSolver:
         self.aim = AIM(self.N, self.NI) if enrich is not None else None
         self.set_bw_ratios(bw_ratios)
         self.nearest = None
+        self.compression = None  # record of compress(), written to the metadata of every DMFT point
         self._h2 = {}  # patch path -> (k, h2 terms), updated incrementally across events
 
     def set_bw_ratios(self, bw_ratios):
@@ -80,6 +81,31 @@ class MORSolver:
         G_imp = np.array([G[m, m] for m in range(self.NI)]) #block diagonal GF
         n_imp = self.nearest.occupations(alpha)
         return G_imp, float(E0), n_imp, t_gs, time.perf_counter() - t0 - t_gs
+
+    def compress(self, sweep_dir, tol=1e-5, n_freq=40, final_only=False):
+        """Compress the ROM for Matsubara-axis solves by POD of its solutions at the baths a finished
+        sweep visited (final_only: the last bath of each loop) and the n_freq lowest Matsubara
+        frequencies, keeping relative singular values above `tol` (Patch.compress).  In memory;
+        accurate only in the region the sweep covered.  Returns {(i, i): {'p': m, 'h': m}}."""
+        if len(self.atlas.patches) != 1:
+            raise ValueError("compress() supports single-patch atlases")
+        thetas, beta = [], None
+        for f in sorted(Path(sweep_dir).rglob("bath_history.npz")):
+            meta, h = _load_json(f.parent / "dmft_metadata.json"), np.load(f)
+            if meta is None or (meta["N"], meta["NI"]) != (self.N, self.NI):
+                continue
+            for i in range(len(h["eb"]))[-1 if final_only else 0:]:
+                bath = [(h["eb"][i, o], h["vb"][i, o]) for o in range(self.NI)] + [meta["dmu_abs"]]
+                thetas.append(affine_theta(meta["U"], meta["J"], bath, self.NI, self.atlas.NBpNI))
+            beta = meta["beta"]
+        if not thetas:
+            raise ValueError(f"no DMFT points of this model under {sweep_dir}")
+        patch = self.atlas.patches[0]
+        patch.load()
+        sizes = patch.compress(thetas, 1j * np.pi * (2 * np.arange(n_freq) + 1) / beta, tol, n_freq)
+        self.compression = {"sweep_dir": str(sweep_dir), "n_baths": len(thetas), "final_only": final_only,
+                            "tol": tol, "n_freq": n_freq}
+        return sizes
 
     def try_enrich(self, U, J, bath):
         """None if the Ritz residual is below tol, else whether the nearest patch grew."""
@@ -107,6 +133,10 @@ class MORSolver:
                              resolvent=cfg.resolvent)
         if grown:
             h2_r = append_h2_terms(h2_r, ops, patch.B[:, :k0], patch.B[:, k0:])
+            patch.record_event_time(time.perf_counter() - t0)
+            if self.compression is not None:
+                self.compression = None
+                self.log("  [enrich] the ROM grew, which restores the full ROM: call compress() again")
         self._h2[patch.path] = (patch.B.shape[1], h2_r)
         self.log(f"  [enrich] {len(picks)} local candidate(s); k {k0} -> {patch.B.shape[1]} "
                  f"({time.perf_counter() - t0:.2f}s)")
@@ -216,6 +246,7 @@ def run_point(cfg, solver, U, J, bw_ratios, outdir, mu=None):
             "solver": "MOR" if isinstance(solver, MORSolver) else "ED",
             "atlas_dir": solver.atlas.path if isinstance(solver, MORSolver) else None,
             "enrich": asdict(enrich) if enrich else None,
+            "compression": getattr(solver, "compression", None),
             "start_time": datetime.now().isoformat(), "warm_start_source": None}
 
     def save_meta():

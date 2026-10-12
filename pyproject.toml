@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "morec"
-version = "1.0.0"
+version = "1.1.0"
 description = "Reduced-order models of impurity Green's functions from eigenvector continuation and model order reduction (MOR+EC)"
 readme = "README.md"
 license = "MIT"

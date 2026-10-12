@@ -151,7 +151,7 @@ class Patch:
         self.loaded = True
 
     def unload(self):
-        for name in ("B", "h_r", "pairs", "orth", "_n_hat"):
+        for name in ("B", "h_r", "pairs", "orth", "_orth_full", "_n_hat"):
             self.__dict__.pop(name, None)
         self._proj = {}
         self.loaded = False
@@ -165,6 +165,7 @@ class Patch:
 
     def _refresh(self):
         self.orth = {ij: orth_precomp(p) for ij, p in self.pairs.items() if ij[0] == ij[1]}
+        self._orth_full = self.orth  # compress() replaces orth; the full ROM stays for other frequencies
         self._n_hat = None
         self._batch = None
         keys = sorted(self.h_r)  # stacked h_r for the online ground state
@@ -173,16 +174,17 @@ class Patch:
 
     def solution_grams(self, thetas, freqs, n_freq=40, normalize=None, freq_weight=0.0):
         """{(i, i): {sector: Gram}} of the uncompressed diagonal ROMs' solutions at `thetas` (mor.solution_grams)."""
-        self._refresh()
         samples = [(th,) + self._solve_gs(th)[::-1] for th in thetas]
-        return {ij: solution_grams(o, samples, freqs, n_freq, normalize, freq_weight) for ij, o in self.orth.items()}
+        return {ij: solution_grams(o, samples, freqs, n_freq, normalize, freq_weight)
+                for ij, o in self._orth_full.items()}
 
     def compress(self, thetas=None, freqs=None, tol=1e-5, n_freq=40, normalize=None, freq_weight=0.0, grams=None):
-        """Project the diagonal-pair ROMs onto the span their solutions use at `thetas` (or precomputed
-        `grams` from solution_grams).  Undone by the next enrichment event (_refresh); returns m per sector."""
+        """Compress the diagonal-pair ROMs by POD of their solutions at `thetas` and the n_freq lowest
+        `freqs` (or from precomputed `grams`), in memory.  gf() uses them on the imaginary axis only;
+        enrichment restores the full ROMs.  Returns m per sector."""
         grams = self.solution_grams(thetas, freqs, n_freq, normalize, freq_weight) if grams is None else grams
-        self._refresh()
-        self.orth = {ij: compress_orth(o, grams[ij], tol) for ij, o in self.orth.items()}
+        self.orth = {ij: compress_orth(o, grams[ij], tol) for ij, o in self._orth_full.items()}
+        self._batch = None
         secs = [(i, s, sd) for (i, _), o in sorted(self.orth.items()) for s, sd in sorted(o.items())]
         terms = secs[0][2]["terms"]
         M, k = max(sd["H_stack"].shape[1] for _, _, sd in secs), secs[0][2]["b_orth"].shape[1]
@@ -196,6 +198,12 @@ class Patch:
             b[n, :m] = sd["b_orth"]
         self._batch = {"secs": [(i, s) for i, s, _ in secs], "terms": terms, "H": H.reshape(len(terms), -1).T, "b": b, "M": M}
         return {ij: {s: sd["H_stack"].shape[1] for s, sd in o.items()} for ij, o in self.orth.items()}
+
+    def record_event_time(self, seconds):
+        """Store the wall time of the whole enrichment event (candidate search included) on its history
+        entry; ec_time_s and mor_time_s there cover the basis and projection updates only."""
+        self.meta["enrichment_history"][-1]["event_time_s"] = round(seconds, 3)
+        _save_json(os.path.join(self.path, "meta.json"), self.meta)
 
     def _solve_gs(self, theta):
         """(alpha, E) as solve_reduced, from the stacked h_r."""
@@ -217,9 +225,9 @@ class Patch:
         alpha, E = self._solve_gs(theta)
         t_gs = time.perf_counter() - t0
         G = np.zeros((self.NI, self.NI, len(freqs)), dtype=complex)
-        # haydock_batch checks convergence only near the real axis: Matsubara-like frequencies only
-        if (self._batch is not None and (diagonal_only or all(i == j for i, j in self.pairs))
-                and np.ptp(np.real(freqs)) <= 1e-12 * max(1.0, float(np.max(np.abs(freqs))))):
+        # A compressed ROM is valid on the imaginary axis only (haydock_batch also assumes that axis)
+        matsubara = float(np.max(np.abs(np.real(freqs)))) <= 1e-12 * max(1.0, float(np.max(np.abs(freqs))))
+        if self._batch is not None and matsubara and (diagonal_only or all(i == j for i, j in self.pairs)):
             bt = self._batch
             c = np.array([theta.get(t, 0.0) for t in bt["terms"]])
             S = len(bt["secs"])
@@ -228,9 +236,10 @@ class Patch:
             for (i, _), g in zip(bt["secs"], Gs):
                 G[i, i] += g
             return G, E, alpha, t_gs
+        orth = self.orth if matsubara else self._orth_full
         for (i, j), pair in self.pairs.items():
             if i == j:
-                G[i, i] = gf_galerkin(self.orth[(i, i)], theta, E, alpha, freqs, gf_tol)
+                G[i, i] = gf_galerkin(orth[(i, i)], theta, E, alpha, freqs, gf_tol)
             elif not diagonal_only:
                 G[i, j] = G[j, i] = gf_petrov(pair, theta, E, alpha, freqs)
         return G, E, alpha, t_gs
